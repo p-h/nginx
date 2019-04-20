@@ -592,10 +592,14 @@ syn keyword ngxDirective contained ssl_early_data
 syn keyword ngxDirective contained ssl_ecdh_curve
 syn keyword ngxDirective contained ssl_engine
 syn keyword ngxDirective contained ssl_handshake_timeout
+syn keyword ngxDirective contained ssl_nocert
 syn keyword ngxDirective contained ssl_password_file
 syn keyword ngxDirective contained ssl_prefer_server_ciphers
 syn keyword ngxDirective contained ssl_preread
 syn keyword ngxDirective contained ssl_protocols
+syn keyword ngxDirective contained ssl_psk_path
+syn keyword ngxDirective contained ssl_psk_hash_bucket_size
+syn keyword ngxDirective contained ssl_psk_hash_max_size
 syn keyword ngxDirective contained ssl_session_cache
 syn keyword ngxDirective contained ssl_session_ticket_key
 syn keyword ngxDirective contained ssl_session_tickets

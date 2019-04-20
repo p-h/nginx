@@ -196,6 +196,9 @@ ngx_int_t ngx_ssl_session_cache(ngx_ssl_t *ssl, ngx_str_t *sess_ctx,
     ngx_shm_zone_t *shm_zone, time_t timeout);
 ngx_int_t ngx_ssl_session_ticket_keys(ngx_conf_t *cf, ngx_ssl_t *ssl,
     ngx_array_t *paths);
+ngx_int_t ngx_ssl_psk_path(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *path,
+                           ngx_uint_t psk_hash_max_size,
+                           ngx_uint_t psk_hash_bucket_size);
 ngx_int_t ngx_ssl_session_cache_init(ngx_shm_zone_t *shm_zone, void *data);
 ngx_int_t ngx_ssl_create_connection(ngx_ssl_t *ssl, ngx_connection_t *c,
     ngx_uint_t flags);
@@ -285,6 +288,7 @@ extern int  ngx_ssl_certificate_index;
 extern int  ngx_ssl_next_certificate_index;
 extern int  ngx_ssl_certificate_name_index;
 extern int  ngx_ssl_stapling_index;
+extern int  ngx_ssl_psk_index;
 
 
 #endif /* _NGX_EVENT_OPENSSL_H_INCLUDED_ */

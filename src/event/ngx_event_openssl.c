@@ -11,6 +11,7 @@
 
 
 #define NGX_SSL_PASSWORD_BUFFER_SIZE  4096
+#define NGX_SSL_PSK_HASH_NAME "psk_hash"
 
 
 typedef struct {
@@ -27,7 +28,12 @@ static int ngx_ssl_password_callback(char *buf, int size, int rwflag,
 static int ngx_ssl_verify_callback(int ok, X509_STORE_CTX *x509_store);
 static void ngx_ssl_info_callback(const ngx_ssl_conn_t *ssl_conn, int where,
     int ret);
+static int ngx_ssl_psk_session_callback(ngx_ssl_conn_t *ssl, const u_char
+        *identity, size_t identity_len, ngx_ssl_session_t **sess);
 static void ngx_ssl_passwords_cleanup(void *data);
+static void ngx_ssl_handshake_handler(ngx_event_t *ev);
+static ngx_int_t ngx_ssl_handle_recv(ngx_connection_t *c, int n);
+static void ngx_ssl_write_handler(ngx_event_t *wev);
 static int ngx_ssl_new_client_session(ngx_ssl_conn_t *ssl_conn,
     ngx_ssl_session_t *sess);
 #ifdef SSL_READ_EARLY_DATA_SUCCESS
@@ -134,6 +140,7 @@ int  ngx_ssl_certificate_index;
 int  ngx_ssl_next_certificate_index;
 int  ngx_ssl_certificate_name_index;
 int  ngx_ssl_stapling_index;
+int  ngx_ssl_psk_index;
 
 
 ngx_int_t
@@ -210,6 +217,14 @@ ngx_ssl_init(ngx_log_t *log)
     ngx_ssl_session_ticket_keys_index = SSL_CTX_get_ex_new_index(0, NULL, NULL,
                                                                  NULL, NULL);
     if (ngx_ssl_session_ticket_keys_index == -1) {
+        ngx_ssl_error(NGX_LOG_ALERT, log, 0,
+                      "SSL_CTX_get_ex_new_index() failed");
+        return NGX_ERROR;
+    }
+
+    ngx_ssl_psk_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+
+    if (ngx_ssl_psk_index == -1) {
         ngx_ssl_error(NGX_LOG_ALERT, log, 0,
                       "SSL_CTX_get_ex_new_index() failed");
         return NGX_ERROR;
@@ -383,6 +398,7 @@ ngx_ssl_create(ngx_ssl_t *ssl, ngx_uint_t protocols, void *data)
     SSL_CTX_set_read_ahead(ssl->ctx, 1);
 
     SSL_CTX_set_info_callback(ssl->ctx, ngx_ssl_info_callback);
+    SSL_CTX_set_psk_find_session_callback(ssl->ctx, ngx_ssl_psk_session_callback);
 
     return NGX_OK;
 }
@@ -1503,6 +1519,63 @@ ngx_ssl_new_client_session(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
     }
 
     return 0;
+}
+
+static const unsigned char tls13_aes128gcmsha256_id[] = { 0x13, 0x01 };
+static int
+ngx_ssl_psk_session_callback(ngx_ssl_conn_t *ssl, const u_char *identity,
+        size_t identity_len, ngx_ssl_session_t **sess)
+{
+    const ngx_connection_t *c;
+    ngx_hash_t *psk_hash;
+    ngx_uint_t key;
+    ngx_str_t *psk;
+    const SSL_CIPHER *cipher;
+    ngx_ssl_session_t *tmpsess;
+
+    c = ngx_ssl_get_connection((ngx_ssl_conn_t *) ssl);
+
+    psk_hash = SSL_CTX_get_ex_data(c->ssl->session_ctx, ngx_ssl_psk_index);
+    key = ngx_hash_key((u_char *) identity, identity_len);
+    psk = ngx_hash_find(psk_hash, key, (u_char *)identity, identity_len);
+
+    if (!psk) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                "Couldn't find psk for identity: %s", (char *) identity);
+        return 0;
+    }
+
+    cipher = SSL_CIPHER_find(ssl, tls13_aes128gcmsha256_id);
+    if (!cipher) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error finding suitable ciphersuite");
+        return 0;
+    }
+
+    tmpsess = SSL_SESSION_new();
+
+    if (!tmpsess) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error creating session");
+        return 0;
+    }
+
+    if (!SSL_SESSION_set1_master_key(tmpsess, psk->data, psk->len)) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error setting master key");
+        return 0;
+    }
+
+    if (!SSL_SESSION_set_cipher(tmpsess, cipher)) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error setting cipher");
+        return 0;
+    }
+
+    if (!SSL_SESSION_set_protocol_version(tmpsess, SSL_version(ssl))) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error setting protocol version");
+        return 0;
+    }
+
+    *sess = tmpsess;
+
+    return 1;
 }
 
 
@@ -4016,6 +4089,158 @@ ngx_ssl_session_ticket_keys(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_array_t *paths)
 }
 
 #endif
+
+
+ngx_int_t
+ngx_ssl_psk_path(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *path,
+                 ngx_uint_t psk_hash_max_size, ngx_uint_t psk_hash_bucket_size)
+
+{
+    ngx_err_t               err;
+    ngx_uint_t              level;
+    ngx_dir_t               dir;
+    ngx_file_t              file;
+    ssize_t                 read;
+    ngx_str_t              *psk_str;
+    ngx_hash_keys_arrays_t  psk_keys;
+    ngx_str_t               key;
+    ngx_hash_t             *psk_hash;
+    ngx_hash_init_t         hash;
+
+    if (path->len == 0) {
+        return NGX_OK;
+    }
+
+    psk_keys.pool = cf->pool;
+    psk_keys.temp_pool = cf->temp_pool;
+
+    ngx_hash_keys_array_init(&psk_keys, NGX_HASH_SMALL);
+
+    if (ngx_open_dir(path, &dir) == NGX_ERROR) {
+        err = ngx_errno;
+
+        level = (err == NGX_ENOENT
+                 || err == NGX_ENOTDIR
+                 || err == NGX_ENAMETOOLONG
+                 || err == NGX_EACCES) ? NGX_LOG_ERR : NGX_LOG_CRIT;
+
+        ngx_ssl_error(level, ssl->log, err,
+                      ngx_open_dir_n " \"%s\" failed", path->data);
+
+        return NGX_ERROR;
+    }
+
+    for ( ;; ) {
+        ngx_set_errno(0);
+
+        if (ngx_read_dir(&dir) == NGX_ERROR) {
+            err = ngx_errno;
+
+            if (err == NGX_ENOMOREFILES) {
+                break;
+            }
+
+            ngx_ssl_error(NGX_LOG_CRIT, ssl->log, err,
+                          ngx_read_dir_n " \"%V\" failed", &path);
+            return NGX_ERROR;
+        }
+
+        if (!ngx_de_is_file(&dir)) {
+            continue;
+        }
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ssl->log, 0,
+                       "loading PSK from file: \"%s\"", ngx_de_name(&dir));
+
+        file.name.len = ngx_de_namelen(&dir) + 2;
+        file.name.data = ngx_pnalloc(cf->pool, file.name.len);
+        if (file.name.data == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_sprintf(file.name.data, "%V/%s%Z", path, ngx_de_name(&dir));
+
+        file.log = ssl->log;
+
+        file.fd = ngx_open_file(file.name.data, NGX_FILE_RDONLY, 0, 0);
+        if (file.fd == NGX_INVALID_FILE) {
+            err = ngx_errno;
+            ngx_ssl_error(NGX_LOG_CRIT, ssl->log, err,
+                          ngx_open_file_n " \"%s\" failed", file.name.data);
+            return NGX_ERROR;
+        }
+
+        if (ngx_fd_info(file.fd, &file.info) == NGX_FILE_ERROR) {
+            ngx_ssl_error(NGX_LOG_CRIT, ssl->log, ngx_errno,
+                          ngx_fd_info_n " \"%s\" failed", file.name.data);
+            return NGX_ERROR;
+        }
+
+        psk_str = ngx_palloc(cf->pool, sizeof(ngx_str_t));
+        if (psk_str == NULL) {
+            return NGX_ERROR;
+        }
+
+        psk_str->len = file.info.st_size;
+        psk_str->data = ngx_pnalloc(cf->pool, psk_str->len);
+
+        read = ngx_read_file(&file, psk_str->data, psk_str->len, 0);
+        if (read == NGX_ERROR) {
+            ngx_ssl_error(NGX_LOG_CRIT, ssl->log, ngx_errno,
+                          ngx_read_file_n " \"%s\" failed", file.name.data);
+            return NGX_ERROR;
+        }
+
+        if ((size_t)read != psk_str->len) {
+            ngx_ssl_error(NGX_LOG_CRIT, ssl->log, 0,
+                          ngx_read_file_n
+                          " \"%s\" returned only %z bytes instead of %z",
+                          file.name.data, read, psk_str->len);
+            return NGX_ERROR;
+        }
+
+        if (ngx_close_file(file.fd) == NGX_FILE_ERROR) {
+            ngx_ssl_error(NGX_LOG_ALERT, ssl->log, ngx_errno,
+                          ngx_close_file_n " \"%s\" failed", file.name.data);
+        }
+
+        ngx_pfree(cf->pool, file.name.data);
+
+        key.data = ngx_de_name(&dir);
+        key.len = ngx_de_namelen(&dir);
+
+        ngx_hash_add_key(&psk_keys, &key, psk_str, NGX_HASH_READONLY_KEY);
+    }
+
+    if (ngx_close_dir(&dir) == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_CRIT, ssl->log, ngx_errno,
+                      ngx_close_dir_n " \"%s\" failed", path->data);
+    }
+
+    psk_hash = ngx_palloc(cf->pool, sizeof(ngx_hash_t));
+
+    hash.hash = psk_hash;
+    hash.key = ngx_hash_key;
+    hash.max_size = psk_hash_max_size;
+    hash.bucket_size = psk_hash_bucket_size;
+    hash.name = NGX_SSL_PSK_HASH_NAME;
+    hash.pool = cf->pool;
+    hash.temp_pool = cf->temp_pool;
+
+    if (ngx_hash_init(&hash, psk_keys.keys.elts, psk_keys.keys.nelts)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (SSL_CTX_set_ex_data(ssl->ctx, ngx_ssl_psk_index, psk_hash) == 0) {
+        ngx_ssl_error(NGX_LOG_ALERT, ssl->log, 0,
+                      "SSL_CTX_set_ex_data() failed");
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
 
 
 void

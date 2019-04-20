@@ -33,6 +33,7 @@ typedef struct {
 
     time_t                          session_timeout;
 
+    ngx_flag_t                      nocert;
     ngx_array_t                    *certificates;
     ngx_array_t                    *certificate_keys;
 
@@ -58,6 +59,10 @@ typedef struct {
     ngx_flag_t                      stapling_verify;
     ngx_str_t                       stapling_file;
     ngx_str_t                       stapling_responder;
+
+    ngx_str_t                       psk_path;
+    ngx_uint_t                      psk_hash_max_size;
+    ngx_uint_t                      psk_hash_bucket_size;
 
     u_char                         *file;
     ngx_uint_t                      line;
