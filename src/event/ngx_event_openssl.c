@@ -1521,7 +1521,7 @@ ngx_ssl_new_client_session(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
     return 0;
 }
 
-static const unsigned char tls13_aes128gcmsha256_id[] = { 0x13, 0x01 };
+static const unsigned char tls13_aes256gcmsha384_id[] = { 0x13, 0x02 };
 static int
 ngx_ssl_psk_session_callback(ngx_ssl_conn_t *ssl, const u_char *identity,
         size_t identity_len, ngx_ssl_session_t **sess)
@@ -1545,7 +1545,7 @@ ngx_ssl_psk_session_callback(ngx_ssl_conn_t *ssl, const u_char *identity,
         return 0;
     }
 
-    cipher = SSL_CIPHER_find(ssl, tls13_aes128gcmsha256_id);
+    cipher = SSL_CIPHER_find(ssl, tls13_aes256gcmsha384_id);
     if (!cipher) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error finding suitable ciphersuite");
         return 0;
@@ -3242,7 +3242,7 @@ ngx_ssl_session_id_context(ngx_ssl_t *ssl, ngx_str_t *sess_ctx,
         }
     }
 
-    if (SSL_CTX_get_ex_data(ssl->ctx, ngx_ssl_certificate_index) == NULL) {
+    if (certificates != NULL && SSL_CTX_get_ex_data(ssl->ctx, ngx_ssl_certificate_index) == NULL) {
 
         /*
          * If certificates are loaded dynamically, we use certificate

@@ -872,8 +872,7 @@ ngx_http_ssl_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->shm_zone = prev->shm_zone;
     }
 
-    /* FIXME: Well actually I'd like to have session cache even without a cert */
-    if (!conf->nocert && ngx_ssl_session_cache(&conf->ssl,
+    if (ngx_ssl_session_cache(&conf->ssl,
                 &ngx_http_ssl_sess_id_ctx, conf->certificates,
                 conf->builtin_session_cache, conf->shm_zone,
                 conf->session_timeout) != NGX_OK)
