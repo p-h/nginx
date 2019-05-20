@@ -845,7 +845,7 @@ ngx_http_ssl_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
         }
     }
 
-    if (ngx_ssl_trusted_certificate(cf, &conf->ssl,
+    if (!conf->nocert && ngx_ssl_trusted_certificate(cf, &conf->ssl,
                                     &conf->trusted_certificate,
                                     conf->verify_depth)
         != NGX_OK)

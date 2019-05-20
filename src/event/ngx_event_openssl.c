@@ -1560,20 +1560,24 @@ ngx_ssl_psk_session_callback(ngx_ssl_conn_t *ssl, const u_char *identity,
 
     if (!SSL_SESSION_set1_master_key(tmpsess, psk->data, psk->len)) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error setting master key");
+        SSL_SESSION_free(tmpsess);
         return 0;
     }
 
     if (!SSL_SESSION_set_cipher(tmpsess, cipher)) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error setting cipher");
+        SSL_SESSION_free(tmpsess);
         return 0;
     }
 
     if (!SSL_SESSION_set_protocol_version(tmpsess, SSL_version(ssl))) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "Error setting protocol version");
+        SSL_SESSION_free(tmpsess);
         return 0;
     }
 
     *sess = tmpsess;
+    c->ssl->session = tmpsess;
 
     return 1;
 }
